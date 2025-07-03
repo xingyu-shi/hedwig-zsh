@@ -89,10 +89,23 @@ get_tab_completion_context() {
 }
 
 get_history_context() {
-    # Include the deduplicated history commands as context if available with history command
-  local history_commands=$(fc -l -n 1 | grep -v '^#' | grep -v '^$' | tail -n 30 | sed 's/"/\\"/g' | awk '!seen[$0]++' | awk '{print "#" NR "#" $0}' | tr '\n' ' ')
-  # local history_commands=$(history | sed 's/^ *[0-9]* *//' | grep -v '^$' )
+  # 获取最近的 100 条历史记录，去除注释和空行
+  local raw_history=$(fc -l -n 1 | grep -v '^#' | grep -v '^[[:space:]]*$' | tail -n 20)
+
+  # 清理控制字符（包括回车、制表符等）
+  local cleaned_history=$(echo "$raw_history" | tr -d '\000-\011\013\014\016-\037' | awk '!seen[$0]++')
+
+  # 添加编号并格式化，每条前加 #编号#
+  local history_commands=$(echo "$cleaned_history" | awk '{printf "#%d%s ", NR, $0}')
+
+  # 转义双引号
+  history_commands="${history_commands//\"/\\\"}"
+  
   echo "$history_commands"
+}
+
+get_json_string() {
+  jq -Rn --arg s "$1" '$s'
 }
 
 interact_with_ollama() {
@@ -112,27 +125,34 @@ interact_with_ollama() {
     echo "🚨 Please provide a valid model name for the LLM service."
     return 1
   fi
-  
+
   local history_commands=$(get_history_context)
-  
+  local request_content="You are an intelligent shell assistant. Based on the current user's command '$user_query' and the shell command history '$history_commands', infer and generate the most likely complete and executable shell command(s) the user intends to run. Use history to understand context and fill in missing parts. Suggest multiple possible commands if needed. Output a compact one-line JSON object: {\"commands\": [\"command1\", \"command2\", ...]}. Do not include comments or explanations."
+  local escaped_request_content=$(get_json_string "$request_content")
+  local escaped_model=$(get_json_string "$llm_model")
+
   local payload=$(cat <<EOF
 {
-  "model": "$llm_model",
+  "model": $escaped_model,
   "messages": [
     {
       "role": "user",
-      "content": "You are an intelligent shell assistant. Based on the current user command "$user_query" and the shell history "$history_commands", infer and generate the most likely complete and executable shell command(s) the user intends to run. Use history to understand context and fill in missing parts. Suggest multiple possible commands if needed. Output a compact one-line JSON object: {"commands": ["command1", "command2", ...]}. Do not include comments or explanations."
+      "content": $escaped_request_content
     }
   ]
 }
 EOF
 )
-
+ 
+  log_debug "payload: $payload"
+  
   local content=$(curl -s -X POST "$llm_base_url/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "$payload" | jq -c '.' | jq -r '.choices[0].message.content // empty')
 
-  
+
+  log_debug "Raw LLM service response:" "$content"
+
   if [[ -z "$content" ]]; then
     echo "❌ No content found in the response. Please check the LLM service."
     return 1
@@ -156,7 +176,6 @@ EOF
     return 1
   fi
 
-  echo "✅ Retrieved commands: "
   echo "$commands"
 }
 

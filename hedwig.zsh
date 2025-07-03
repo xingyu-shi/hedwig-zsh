@@ -51,23 +51,53 @@ function get_completions_for() {
 
   local input="$1"
   local -a completions
-
-  # 设置上下文
-  BUFFER="$input"
-  CURSOR=${#BUFFER}
-
-  # 创建一个补全数组
-  compstate[context]=command
-  compstate[insert]=''
-
-  # 调用补全并捕获 compadd 的结果
-  compadd() {
-    completions+=("$@")  # 捕捉 compadd 的参数
-    builtin compadd "$@"
+  
+  # Create a temporary file to store completions
+  local tmp_file=$(mktemp)
+  
+  # Create a function to capture completions
+  _hedwig_capture_comps() {
+    local -a reply
+    reply=()
+    
+    # Set up completion context
+    BUFFER="$input"
+    CURSOR=${#BUFFER}
+    
+    # Use compstate to properly initialize completion
+    compstate[insert]=menu
+    
+    # Generate completions without calling _main_complete directly
+    zle expand-or-complete
+    
+    # Save the completions
+    print -l -- "${reply[@]}" > $tmp_file
   }
-
-  _main_complete  # 执行补全（会触发 compadd）
-
+  
+  # Create a widget for our function
+  zle -N _hedwig_capture_comps
+  
+  # Call the widget in a clean environment
+  {
+    # Temporarily override compadd to capture completions
+    functions[_original_compadd]=$functions[compadd]
+    compadd() {
+      reply+=("$@")
+      _original_compadd "$@"
+    }
+    
+    # Execute the widget
+    _hedwig_capture_comps
+    
+    # Restore original compadd
+    functions[compadd]=$functions[_original_compadd]
+    unfunction _original_compadd
+  } 2>/dev/null
+  
+  # Read completions from the temporary file
+  completions=("${(@f)$(<$tmp_file)}")
+  rm -f $tmp_file
+  
   log_debug $completions
   print -l -- $completions
 }
@@ -80,10 +110,9 @@ fzf_hedwigzsh() {
   fi
 
   HEDWIGZSH_USER_QUERY=$BUFFER
-  echo "Current buffer: $HEDWIGZSH_USER_QUERY"
-  echo "get_completions_for $HEDWIGZSH_USER_QUERY: $(get_completions_for "$HEDWIGZSH_USER_QUERY")"
-
-  print "get_completions_for $HEDWIGZSH_USER_QUERY: $(get_completions_for "$HEDWIGZSH_USER_QUERY")"
+  local completions_output=$(get_completions_for "$HEDWIGZSH_USER_QUERY")
+  log_debug "get_completions_for $HEDWIGZSH_USER_QUERY:"
+  log_debug "$completions_output"
 
   zle end-of-line
   zle reset-prompt
