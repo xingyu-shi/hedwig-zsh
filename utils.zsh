@@ -77,6 +77,24 @@ check_llm_running() {
   fi
 }
 
+# Extract potential tab completions for the current prefix
+get_tab_completion_context() {
+  local current_prefix="$1"
+  if [[ -z "$current_prefix" ]]; then
+    echo ""
+    return
+  fi
+  local suggestions=$(compgen -A command -- "$current_prefix" | awk '!seen[$0]++' | tr '\n' ' ')
+  echo "$suggestions"
+}
+
+get_history_context() {
+    # Include the deduplicated history commands as context if available with history command
+  local history_commands=$(fc -l -n 1 | grep -v '^#' | grep -v '^$' | tail -n 30 | sed 's/"/\\"/g' | awk '!seen[$0]++' | awk '{print "#" NR "#" $0}' | tr '\n' ' ')
+  # local history_commands=$(history | sed 's/^ *[0-9]* *//' | grep -v '^$' )
+  echo "$history_commands"
+}
+
 interact_with_ollama() {
   local user_query="$1"
   local llm_base_url="$2"
@@ -86,14 +104,24 @@ interact_with_ollama() {
     echo "Usage: interact_with_ollama \"your task description\""
     return 1
   fi
-
+  if [[ -z "$llm_base_url" ]]; then
+    echo "🚨 Please provide a valid base URL for the LLM service."
+    return 1
+  fi
+  if [[ -z "$llm_model" ]]; then
+    echo "🚨 Please provide a valid model name for the LLM service."
+    return 1
+  fi
+  
+  local history_commands=$(get_history_context)
+  
   local payload=$(cat <<EOF
 {
   "model": "$llm_model",
   "messages": [
     {
       "role": "user",
-      "content": "Generate shell commands for the following task: $user_query. Provide multiple relevant commands if available. Output in JSON format. The JSON needs to include a key named 'commands' with a list of commands."
+      "content": "You are an intelligent shell assistant. Based on the current user command "$user_query" and the shell history "$history_commands", infer and generate the most likely complete and executable shell command(s) the user intends to run. Use history to understand context and fill in missing parts. Suggest multiple possible commands if needed. Output a compact one-line JSON object: {"commands": ["command1", "command2", ...]}. Do not include comments or explanations."
     }
   ]
 }
@@ -104,6 +132,7 @@ EOF
     -H "Content-Type: application/json" \
     -d "$payload" | jq -c '.' | jq -r '.choices[0].message.content // empty')
 
+  
   if [[ -z "$content" ]]; then
     echo "❌ No content found in the response. Please check the LLM service."
     return 1

@@ -45,6 +45,33 @@ validate_required() {
   fi
 }
 
+function get_completions_for() {
+  emulate -L zsh
+  setopt extended_glob
+
+  local input="$1"
+  local -a completions
+
+  # 设置上下文
+  BUFFER="$input"
+  CURSOR=${#BUFFER}
+
+  # 创建一个补全数组
+  compstate[context]=command
+  compstate[insert]=''
+
+  # 调用补全并捕获 compadd 的结果
+  compadd() {
+    completions+=("$@")  # 捕捉 compadd 的参数
+    builtin compadd "$@"
+  }
+
+  _main_complete  # 执行补全（会触发 compadd）
+
+  log_debug $completions
+  print -l -- $completions
+}
+
 fzf_hedwigzsh() {
   setopt extendedglob
   validate_required
@@ -53,14 +80,16 @@ fzf_hedwigzsh() {
   fi
 
   HEDWIGZSH_USER_QUERY=$BUFFER
+  echo "Current buffer: $HEDWIGZSH_USER_QUERY"
+  echo "get_completions_for $HEDWIGZSH_USER_QUERY: $(get_completions_for "$HEDWIGZSH_USER_QUERY")"
+
+  print "get_completions_for $HEDWIGZSH_USER_QUERY: $(get_completions_for "$HEDWIGZSH_USER_QUERY")"
 
   zle end-of-line
   zle reset-prompt
 
   print
-  print -u1 "Please wait..."
-
-  log_debug "Raw LLM service response:" "$HEDWIGZSH_RESPONSE"
+  print -u1 "💭Please wait..."
 
   # Export necessary environment variables to be used by the python script
 
