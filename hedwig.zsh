@@ -1,7 +1,7 @@
 # default shortcut as Ctrl-o
 (( ! ${+HEDWIGZSH_HOTKEY} )) && typeset -g HEDWIGZSH_HOTKEY='^o'
 # default ollama model as qwen2.5-coder:3b
-(( ! ${+HEDWIGZSH_MODEL} )) && typeset -g HEDWIGZSH_MODEL='gemma3:latest'
+(( ! ${+HEDWIGZSH_MODEL} )) && typeset -g HEDWIGZSH_MODEL='qwen3:latest'
 # default response number as 5
 (( ! ${+HEDWIGZSH_COMMAND_COUNT} )) && typeset -g HEDWIGZSH_COMMAND_COUNT='5'
 # default ollama server host
@@ -45,63 +45,6 @@ validate_required() {
   fi
 }
 
-function get_completions_for() {
-  emulate -L zsh
-  setopt extended_glob
-
-  local input="$1"
-  local -a completions
-  
-  # Create a temporary file to store completions
-  local tmp_file=$(mktemp)
-  
-  # Create a function to capture completions
-  _hedwig_capture_comps() {
-    local -a reply
-    reply=()
-    
-    # Set up completion context
-    BUFFER="$input"
-    CURSOR=${#BUFFER}
-    
-    # Use compstate to properly initialize completion
-    compstate[insert]=menu
-    
-    # Generate completions without calling _main_complete directly
-    zle expand-or-complete
-    
-    # Save the completions
-    print -l -- "${reply[@]}" > $tmp_file
-  }
-  
-  # Create a widget for our function
-  zle -N _hedwig_capture_comps
-  
-  # Call the widget in a clean environment
-  {
-    # Temporarily override compadd to capture completions
-    functions[_original_compadd]=$functions[compadd]
-    compadd() {
-      reply+=("$@")
-      _original_compadd "$@"
-    }
-    
-    # Execute the widget
-    _hedwig_capture_comps
-    
-    # Restore original compadd
-    functions[compadd]=$functions[_original_compadd]
-    unfunction _original_compadd
-  } 2>/dev/null
-  
-  # Read completions from the temporary file
-  completions=("${(@f)$(<$tmp_file)}")
-  rm -f $tmp_file
-  
-  log_debug $completions
-  print -l -- $completions
-}
-
 fzf_hedwigzsh() {
   setopt extendedglob
   validate_required
@@ -109,11 +52,19 @@ fzf_hedwigzsh() {
     return 1
   fi
 
-  HEDWIGZSH_USER_QUERY=$BUFFER
-  local completions_output=$(get_completions_for "$HEDWIGZSH_USER_QUERY")
-  log_debug "get_completions_for $HEDWIGZSH_USER_QUERY:"
-  log_debug "$completions_output"
-
+  # CURSOR=${#BUFFER}
+  # # Generate completions
+  # zle expand-or-complete
+  
+  # # Capture the completion list if available
+  # if [[ -n $compstate[list] ]]; then
+  #   # Get the completion list from the compadd array
+  #   local tab_completions=$(echo ${(F)compstate[list]})
+  #   log_debug "Captured completions:" "$completions"
+  # else
+  #   log_debug "No completions available"
+  # fi
+  
   zle end-of-line
   zle reset-prompt
 
@@ -122,8 +73,13 @@ fzf_hedwigzsh() {
 
   # Export necessary environment variables to be used by the python script
 
+  # Get the current buffer content for tab completion context
+  local current_buffer=$BUFFER
+  # Set the user query from the current buffer
+  HEDWIGZSH_USER_QUERY=$current_buffer
+  
   # Get absolute path to the script directory
-  HEDWIGZSH_COMMANDS=$( interact_with_ollama "$HEDWIGZSH_USER_QUERY" "$HEDWIGZSH_URL" "$HEDWIGZSH_MODEL")
+  HEDWIGZSH_COMMANDS=$( interact_with_ollama "$HEDWIGZSH_USER_QUERY" "$HEDWIGZSH_URL" "$HEDWIGZSH_MODEL" "$tab_completions")
   
   # Check if the command was successful and that the commands is an array
   if [ $? -ne 0 ] || [ -z "$HEDWIGZSH_COMMANDS" ]; then

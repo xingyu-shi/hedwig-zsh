@@ -77,17 +77,6 @@ check_llm_running() {
   fi
 }
 
-# Extract potential tab completions for the current prefix
-get_tab_completion_context() {
-  local current_prefix="$1"
-  if [[ -z "$current_prefix" ]]; then
-    echo ""
-    return
-  fi
-  local suggestions=$(compgen -A command -- "$current_prefix" | awk '!seen[$0]++' | tr '\n' ' ')
-  echo "$suggestions"
-}
-
 get_history_context() {
   # 获取最近的 100 条历史记录，去除注释和空行
   local raw_history=$(fc -l -n 1 | grep -v '^#' | grep -v '^[[:space:]]*$' | tail -n 20)
@@ -112,6 +101,7 @@ interact_with_ollama() {
   local user_query="$1"
   local llm_base_url="$2"
   local llm_model="$3"
+  local tab_completions="$4"
 
   if [[ -z "$user_query" ]]; then
     echo "Usage: interact_with_ollama \"your task description\""
@@ -127,7 +117,8 @@ interact_with_ollama() {
   fi
 
   local history_commands=$(get_history_context)
-  local request_content="You are an intelligent shell assistant. Based on the current user's command '$user_query' and the shell command history '$history_commands', infer and generate the most likely complete and executable shell command(s) the user intends to run. Use history to understand context and fill in missing parts. Suggest multiple possible commands if needed. Output a compact one-line JSON object: {\"commands\": [\"command1\", \"command2\", ...]}. Do not include comments or explanations."
+  # local request_content="You are an intelligent shell assistant. Based on the current user's request in the command line '$user_query', the shell command history '$history_commands', infer and generate the most likely complete and executable shell command(s) the user intends to run. Use history to understand context. If tab completions are available, prioritize them as they represent valid commands or arguments in the current context. Suggest multiple possible commands if needed. Output a compact one-line JSON object: {\"commands\": [\"command1\", \"command2\", ...]}. Do not include comments or explanations."
+  local request_content="/no_think You are an intelligent shell assistant. Here is the current user's request: '$user_query'. Generate the most likely zsh command(s) the user intends to run in a one-liner script. Prefer native zsh commands. Output JSON object: {\"commands\": [\"command1\", \"command2\", ...]}. Do not include comments or explanations."
   local escaped_request_content=$(get_json_string "$request_content")
   local escaped_model=$(get_json_string "$llm_model")
 
@@ -148,7 +139,7 @@ EOF
   
   local content=$(curl -s -X POST "$llm_base_url/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d "$payload" | jq -c '.' | jq -r '.choices[0].message.content // empty')
+    -d "$payload" | jq -c '.' | jq -r '.choices[0].message.content // empty' | perl -0777 -pe 's#<think>.*?</think>##gs')
 
 
   log_debug "Raw LLM service response:" "$content"
@@ -158,14 +149,27 @@ EOF
     return 1
   fi
 
-  # 提取 JSON 内容（markdown-wrapped block）
-  local json_block=$(echo "$content" | sed -n '/```json/,/```/p' | sed '1d;$d')
+  # # 提取 JSON 内容（markdown-wrapped block）
+  # local json_block=$(echo "$content" | sed -n '/```json/,/```/p' | sed '1d;$d')
 
-  if [[ -z "$json_block" ]]; then
-    echo "⚠️ No markdown-wrapped JSON content found. Original output:"
-    echo "$content"
-    return 1
-  fi
+  # if [[ -z "$json_block" ]]; then
+  #   echo "⚠️ No markdown-wrapped JSON content found. Original output:"
+  #   echo "$content"
+  #   return 1
+  # fi
+  # 尝试直接解析 JSON
+if echo "$content" | jq empty 2>/dev/null; then
+  # 是纯 JSON
+  local json_block="$content"
+else
+  # 提取 markdown code block
+  local json_block=$(echo "$content" | sed -n '/^```[[:alnum:]]*$/,/^```$/p' | sed '1d;$d')
+fi
+
+if [[ -z "$json_block" ]]; then
+  echo "❌ No JSON content found"
+  exit 1
+fi
 
   # 提取 commands 列表
   local commands=$(echo "$json_block" | jq -r '.commands[]?')
@@ -178,4 +182,3 @@ EOF
 
   echo "$commands"
 }
-
